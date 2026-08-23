@@ -407,11 +407,25 @@ const W = 400, H = 700;
 const PUCK_R = 12, PADDLE_R = 28;
 const GOAL_W = 130;
 const WIN_SCORE = 5;
+const COUNTDOWN_MS = 3000;
+const GOAL_FREEZE_MS = 900;
+const CELEBRATION_MS = 900;
 
 let canvas, ctx, dpr, cssW, cssH, scaleF;
+let canvasInitialized = false;
+let iceGradient = null;
 let myPaddle = {x:W/2, y: H-70};
 let renderState = null;
 let animFrame = null;
+
+let countdownEndsAt = null;
+let celebration = null;
+let paddleGuestDisp = {x:W/2, y:70};
+let dispPuck = {x:W/2, y:H/2};
+let dispHostPaddle = {x:W/2, y:70};
+let lastKnownScoreHost = -1, lastKnownScoreGuest = -1;
+let guestEnding = false;
+let guestPaddleCache = {x:W/2, y:70};
 
 async function startMatch(matchId, hostName, guestName){
   currentMatchId = matchId;
@@ -420,15 +434,24 @@ async function startMatch(matchId, hostName, guestName){
   document.getElementById('guestTag').textContent = guestName;
   myPaddle = isHost ? {x:W/2, y:H-70} : {x:W/2, y:70};
 
+  paddleGuestDisp = {x:W/2, y:70};
+  dispPuck = {x:W/2, y:H/2};
+  dispHostPaddle = {x:W/2, y:70};
+  celebration = null;
+  lastKnownScoreHost = -1; lastKnownScoreGuest = -1;
+  guestEnding = false;
+  guestPaddleCache = {x:W/2, y:70};
+
   if(isHost){
-    const hostRating = myRating;
+    countdownEndsAt = nowTs() + COUNTDOWN_MS;
     const gp = await dGet('players/'+guestName);
     const guestRating = gp ? gp.rating : 1000;
     await dSet('matches/'+matchId, {
-      status:'playing', scoreHost:0, scoreGuest:0,
+      status:'countdown', scoreHost:0, scoreGuest:0,
       puck:{x:W/2, y:H/2, vx:0, vy:0},
       paddleHost:{x:W/2, y:H-70}, paddleGuest:{x:W/2, y:70},
-      hostName, guestName, hostRating, guestRating, winner:null, updatedAt:nowTs()
+      hostName, guestName, hostRating: myRating, guestRating, winner:null,
+      countdownEndsAt, updatedAt:nowTs()
     });
     await dRemove('invites/'+guestName);
   }
@@ -440,10 +463,10 @@ async function startMatch(matchId, hostName, guestName){
   if(isHost){
     listenOn('guestPaddle', 'guestPaddles/'+matchId, (gp)=>{ if(gp) guestPaddleCache = gp; });
     runHostLoop();
-    timers.broadcast = setInterval(broadcastHostState, 100);
+    timers.broadcast = setInterval(broadcastHostState, 80);
   } else {
     listenOn('matchState', 'matches/'+matchId, onGuestMatchState);
-    timers.guestSend = setInterval(sendGuestPaddle, 100);
+    timers.guestSend = setInterval(sendGuestPaddle, 80);
     runGuestRenderLoop();
   }
 }
@@ -452,10 +475,15 @@ function setupCanvas(){
   canvas = document.getElementById('rink');
   ctx = canvas.getContext('2d');
   resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
-  attachPointerHandlers();
-  checkOrientation();
-  window.addEventListener('resize', checkOrientation);
+  iceGradient = ctx.createLinearGradient(0,0,0,H);
+  iceGradient.addColorStop(0, '#0b2540');
+  iceGradient.addColorStop(1, '#123a63');
+  if(!canvasInitialized){
+    canvasInitialized = true;
+    window.addEventListener('resize', ()=>{ resizeCanvas(); checkOrientation(); });
+    attachPointerHandlers();
+    checkOrientation();
+  }
 }
 
 function checkOrientation(){
@@ -516,21 +544,21 @@ function attachPointerHandlers(){
 
 /* ---- HOST authoritative physics ---- */
 let hostState = null;
-let guestPaddleCache = {x:W/2, y:70};
 function runHostLoop(){
   hostState = {
+    phase: 'countdown',
     scoreHost:0, scoreGuest:0,
-    puck:{x:W/2, y:H/2, vx: (Math.random()<0.5?-1:1)*2.4, vy:(Math.random()<0.5?-1:1)*2.4},
+    puck:{x:W/2, y:H/2, vx:0, vy:0},
     paddleHost: myPaddle,
-    paddleGuest: {x:W/2, y:70}
+    paddleGuest: {x:W/2, y:70},
+    pausedUntil:null, pendingVel:null, winner:null, finishTriggered:false
   };
   let lastT = performance.now();
   function tick(t){
     const dt = Math.min(32, t-lastT)/16.67;
     lastT = t;
     stepPhysics(dt);
-    renderFrame(hostState, false);
-    if(hostState.ended){ return; }
+    renderFrame(hostState.puck, myPaddle, paddleGuestDisp, false, hostState.phase, countdownEndsAt);
     animFrame = requestAnimationFrame(tick);
   }
   animFrame = requestAnimationFrame(tick);
@@ -538,8 +566,31 @@ function runHostLoop(){
 
 function stepPhysics(dt){
   const s = hostState;
+  const now = nowTs();
+
   s.paddleHost = myPaddle;
-  s.paddleGuest = guestPaddleCache;
+  paddleGuestDisp.x += (guestPaddleCache.x-paddleGuestDisp.x)*0.3;
+  paddleGuestDisp.y += (guestPaddleCache.y-paddleGuestDisp.y)*0.3;
+  s.paddleGuest = paddleGuestDisp;
+
+  if(s.phase === 'countdown'){
+    if(now >= countdownEndsAt){
+      s.phase = 'playing';
+      s.puck.vx = (Math.random()<0.5?-1:1)*2.4;
+      s.puck.vy = (Math.random()<0.5?-1:1)*2.4;
+    }
+    return;
+  }
+
+  if(s.phase === 'ending' || s.phase === 'ended'){
+    return;
+  }
+
+  if(s.pausedUntil){
+    if(now < s.pausedUntil) return;
+    s.puck.vx = s.pendingVel.vx; s.puck.vy = s.pendingVel.vy;
+    s.pausedUntil = null; s.pendingVel = null;
+  }
 
   const p = s.puck;
   p.x += p.vx*dt; p.y += p.vy*dt;
@@ -553,7 +604,14 @@ function stepPhysics(dt){
   if(p.y - PUCK_R < 0){
     if(p.x > goalLeft && p.x < goalRight){
       s.scoreHost++;
-      resetPuck(s, -1);
+      celebration = {scorer:'host', start: nowTs()};
+      if(s.scoreHost >= WIN_SCORE){
+        s.phase = 'ending';
+        s.winner = 'host';
+        setTimeout(()=>finishMatch(s), 1000);
+      } else {
+        resetPuck(s, 'guest');
+      }
     } else {
       p.y = PUCK_R; p.vy *= -1;
     }
@@ -561,7 +619,14 @@ function stepPhysics(dt){
   if(p.y + PUCK_R > H){
     if(p.x > goalLeft && p.x < goalRight){
       s.scoreGuest++;
-      resetPuck(s, 1);
+      celebration = {scorer:'guest', start: nowTs()};
+      if(s.scoreGuest >= WIN_SCORE){
+        s.phase = 'ending';
+        s.winner = 'guest';
+        setTimeout(()=>finishMatch(s), 1000);
+      } else {
+        resetPuck(s, 'host');
+      }
     } else {
       p.y = H-PUCK_R; p.vy *= -1;
     }
@@ -572,18 +637,19 @@ function stepPhysics(dt){
 
   const speed = Math.hypot(p.vx,p.vy);
   if(speed > 14){ p.vx *= 14/speed; p.vy *= 14/speed; }
-
-  if(!s.ended && (s.scoreHost >= WIN_SCORE || s.scoreGuest >= WIN_SCORE)){
-    s.ended = true;
-    s.winner = s.scoreHost >= WIN_SCORE ? 'host' : 'guest';
-    finishMatch(s);
-  }
 }
 
-function resetPuck(s, dir){
-  s.puck.x = W/2; s.puck.y = H/2;
-  s.puck.vx = (Math.random()<0.5?-1:1)*2;
-  s.puck.vy = dir * 2.2;
+function resetPuck(s, concededSide){
+  const margin = PUCK_R + 34;
+  if(concededSide === 'guest'){
+    s.puck.x = margin; s.puck.y = H*0.25;
+    s.pendingVel = {vx: 3.0, vy: 1.6+Math.random()*1.0};
+  } else {
+    s.puck.x = margin; s.puck.y = H*0.75;
+    s.pendingVel = {vx: 3.0, vy: -(1.6+Math.random()*1.0)};
+  }
+  s.puck.vx = 0; s.puck.vy = 0;
+  s.pausedUntil = nowTs() + GOAL_FREEZE_MS;
 }
 
 function collide(p, paddle){
@@ -603,17 +669,19 @@ function collide(p, paddle){
 async function broadcastHostState(){
   if(!hostState) return;
   await dSet('matches/'+currentMatchId, {
-    status: hostState.ended ? 'ended' : 'playing',
+    status: hostState.phase,
     scoreHost: hostState.scoreHost, scoreGuest: hostState.scoreGuest,
     puck: hostState.puck,
     paddleHost: hostState.paddleHost, paddleGuest: hostState.paddleGuest,
     winner: hostState.winner || null,
+    countdownEndsAt,
     updatedAt: nowTs()
   });
   updateHud(hostState.scoreHost, hostState.scoreGuest);
 }
 
 async function finishMatch(s){
+  s.phase = 'ended';
   clearInterval(timers.broadcast);
   const hostName = document.getElementById('hostTag').textContent;
   const guestName = document.getElementById('guestTag').textContent;
@@ -646,17 +714,22 @@ function eloUpdate(rHost, rGuest, hostWon){
 /* ---- GUEST: receive state, send paddle ---- */
 async function onGuestMatchState(m){
   if(!m) return;
+  if(m.scoreHost > lastKnownScoreHost){
+    celebration = {scorer:'host', start: nowTs()};
+  } else if(m.scoreGuest > lastKnownScoreGuest){
+    celebration = {scorer:'guest', start: nowTs()};
+  }
+  lastKnownScoreHost = m.scoreHost;
+  lastKnownScoreGuest = m.scoreGuest;
   renderState = m;
   updateHud(m.scoreHost, m.scoreGuest);
-  if(m.status === 'ended'){
-    stopListen('matchState');
-    clearInterval(timers.guestSend);
-    if(animFrame) cancelAnimationFrame(animFrame);
-    const gp = await dGet('players/'+myName);
-    myRating = gp ? gp.rating : myRating;
-    const delta = m.ratings ? (myRating - m.ratings.guestRating + (myRating - m.ratings.guestRating === 0 ? 0 : 0)) : null;
-    const priorRating = m.ratings ? m.ratings.guestRating : null;
-    showResult(m.winner==='guest', m.scoreHost, m.scoreGuest, null);
+  if(m.status === 'ended' && !guestEnding){
+    guestEnding = true;
+    setTimeout(async ()=>{
+      const gp = await dGet('players/'+myName);
+      myRating = gp ? gp.rating : myRating;
+      showResult(m.winner==='guest', m.scoreHost, m.scoreGuest, null);
+    }, 1000);
   }
 }
 async function sendGuestPaddle(){
@@ -664,21 +737,22 @@ async function sendGuestPaddle(){
 }
 function runGuestRenderLoop(){
   function tick(){
-    if(renderState) renderFrame(renderState, true);
-    if(!renderState || renderState.status !== 'ended'){
-      animFrame = requestAnimationFrame(tick);
+    if(renderState){
+      dispPuck.x += (renderState.puck.x-dispPuck.x)*0.3;
+      dispPuck.y += (renderState.puck.y-dispPuck.y)*0.3;
+      dispHostPaddle.x += (renderState.paddleHost.x-dispHostPaddle.x)*0.3;
+      dispHostPaddle.y += (renderState.paddleHost.y-dispHostPaddle.y)*0.3;
+      renderFrame(dispPuck, dispHostPaddle, myPaddle, true, renderState.status, renderState.countdownEndsAt);
     }
+    animFrame = requestAnimationFrame(tick);
   }
   animFrame = requestAnimationFrame(tick);
 }
 
 /* ---- rendering ---- */
-function renderFrame(state, flip){
+function renderFrame(puckPos, hostPos, guestPos, flip, status, cdEndsAt){
   ctx.clearRect(0,0,W,H);
-  const g = ctx.createLinearGradient(0,0,0,H);
-  g.addColorStop(0, '#0b2540');
-  g.addColorStop(1, '#123a63');
-  ctx.fillStyle = g;
+  ctx.fillStyle = iceGradient;
   ctx.fillRect(0,0,W,H);
 
   ctx.strokeStyle = 'rgba(255,255,255,0.5)';
@@ -698,13 +772,16 @@ function renderFrame(state, flip){
 
   function pt(x,y){ return flip ? {x:W-x, y:H-y} : {x,y}; }
 
-  const puckP = pt(state.puck.x, state.puck.y);
-  const hostP = pt(state.paddleHost.x, state.paddleHost.y);
-  const guestP = pt(state.paddleGuest.x, state.paddleGuest.y);
+  const puckP = pt(puckPos.x, puckPos.y);
+  const hostP = pt(hostPos.x, hostPos.y);
+  const guestP = pt(guestPos.x, guestPos.y);
 
   drawPaddle(hostP, '#45f0d1');
   drawPaddle(guestP, '#ff7a59');
   drawPuck(puckP);
+
+  drawCelebration();
+  drawCountdown(status, cdEndsAt);
 }
 
 function drawPaddle(p, color){
@@ -728,6 +805,67 @@ function drawPuck(p){
   ctx.lineWidth = 2;
   ctx.strokeStyle = '#fff';
   ctx.stroke();
+}
+
+function drawCountdown(status, cdEndsAt){
+  if(status !== 'countdown' || !cdEndsAt) return;
+  const remain = cdEndsAt - nowTs();
+  if(remain <= 0) return;
+  const n = Math.ceil(remain/1000);
+  const frac = (remain % 1000)/1000;
+  const scale = 0.7 + 0.3*(1-frac);
+  ctx.save();
+  ctx.fillStyle = 'rgba(4,12,22,0.35)';
+  ctx.fillRect(0,0,W,H);
+  ctx.translate(W/2, H/2);
+  ctx.scale(scale, scale);
+  ctx.font = "bold 90px Oswald, sans-serif";
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = '#45f0d1'; ctx.shadowBlur = 30;
+  ctx.fillStyle = '#eaf4ff';
+  ctx.fillText(String(n), 0, 0);
+  ctx.restore();
+}
+
+function drawCelebration(){
+  if(!celebration) return;
+  const elapsed = nowTs() - celebration.start;
+  if(elapsed > CELEBRATION_MS){ celebration = null; return; }
+  const t = elapsed / CELEBRATION_MS;
+  const color = celebration.scorer === 'host' ? '#45f0d1' : '#ff7a59';
+  const goalY = celebration.scorer === 'host' ? 8 : H-8;
+
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, 1-t*1.2);
+  const grad = ctx.createRadialGradient(W/2, goalY, 0, W/2, goalY, 150);
+  grad.addColorStop(0, color+'99');
+  grad.addColorStop(1, color+'00');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(W/2, goalY, 150, 0, Math.PI*2); ctx.fill();
+  for(let i=0;i<8;i++){
+    const angle = i*(Math.PI*2/8) + t*1.2;
+    const pr = t*75;
+    const px = W/2 + Math.cos(angle)*pr;
+    const py = goalY + Math.sin(angle)*pr*0.7;
+    ctx.globalAlpha = Math.max(0, 1-t);
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(px, py, 4*(1-t*0.4), 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.save();
+  const appear = Math.min(1, elapsed/150);
+  const fadeStart = 600;
+  const alpha = elapsed < fadeStart ? 1 : Math.max(0, 1-(elapsed-fadeStart)/300);
+  ctx.globalAlpha = alpha;
+  ctx.translate(W/2, H/2 - 30);
+  ctx.scale(0.6+0.4*appear, 0.6+0.4*appear);
+  ctx.font = "bold 48px Oswald, sans-serif";
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = color; ctx.shadowBlur = 22;
+  ctx.fillStyle = color;
+  ctx.fillText('GOAL', 0, 0);
+  ctx.restore();
 }
 
 function updateHud(sh, sg){
