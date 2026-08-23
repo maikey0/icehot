@@ -409,7 +409,7 @@ const GOAL_W = 130;
 const WIN_SCORE = 5;
 const COUNTDOWN_MS = 3000;
 const GOAL_FREEZE_MS = 900;
-const CELEBRATION_MS = 900;
+const CELEBRATION_MS = 1100;
 
 let canvas, ctx, dpr, cssW, cssH, scaleF;
 let canvasInitialized = false;
@@ -463,10 +463,10 @@ async function startMatch(matchId, hostName, guestName){
   if(isHost){
     listenOn('guestPaddle', 'guestPaddles/'+matchId, (gp)=>{ if(gp) guestPaddleCache = gp; });
     runHostLoop();
-    timers.broadcast = setInterval(broadcastHostState, 80);
+    timers.broadcast = setInterval(broadcastHostState, 100);
   } else {
     listenOn('matchState', 'matches/'+matchId, onGuestMatchState);
-    timers.guestSend = setInterval(sendGuestPaddle, 80);
+    timers.guestSend = setInterval(sendGuestPaddle, 100);
     runGuestRenderLoop();
   }
 }
@@ -537,6 +537,7 @@ function attachPointerHandlers(){
   canvas.addEventListener('touchstart', e=>{e.preventDefault(); onDown(e);}, {passive:false});
   canvas.addEventListener('touchmove', e=>{e.preventDefault(); onMove(e);}, {passive:false});
   canvas.addEventListener('touchend', e=>{e.preventDefault(); onUp();}, {passive:false});
+  canvas.addEventListener('touchcancel', e=>{e.preventDefault(); onUp();}, {passive:false});
   canvas.addEventListener('mousedown', onDown);
   canvas.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
@@ -569,15 +570,15 @@ function stepPhysics(dt){
   const now = nowTs();
 
   s.paddleHost = myPaddle;
-  paddleGuestDisp.x += (guestPaddleCache.x-paddleGuestDisp.x)*0.3;
-  paddleGuestDisp.y += (guestPaddleCache.y-paddleGuestDisp.y)*0.3;
+  paddleGuestDisp.x += (guestPaddleCache.x-paddleGuestDisp.x)*0.35;
+  paddleGuestDisp.y += (guestPaddleCache.y-paddleGuestDisp.y)*0.35;
   s.paddleGuest = paddleGuestDisp;
 
   if(s.phase === 'countdown'){
     if(now >= countdownEndsAt){
       s.phase = 'playing';
-      s.puck.vx = (Math.random()<0.5?-1:1)*2.4;
-      s.puck.vy = (Math.random()<0.5?-1:1)*2.4;
+      s.puck.vx = (Math.random()<0.5?-1:1)*2.7;
+      s.puck.vy = (Math.random()<0.5?-1:1)*2.7;
     }
     return;
   }
@@ -636,18 +637,18 @@ function stepPhysics(dt){
   collide(p, s.paddleGuest);
 
   const speed = Math.hypot(p.vx,p.vy);
-  if(speed > 14){ p.vx *= 14/speed; p.vy *= 14/speed; }
+  if(speed > 17){ p.vx *= 17/speed; p.vy *= 17/speed; }
 }
 
 function resetPuck(s, concededSide){
-  const margin = PUCK_R + 34;
+  const margin = PUCK_R + 30;
+  const centerOffset = 55;
   if(concededSide === 'guest'){
-    s.puck.x = margin; s.puck.y = H*0.25;
-    s.pendingVel = {vx: 3.0, vy: 1.6+Math.random()*1.0};
+    s.puck.x = margin; s.puck.y = H/2 - centerOffset;
   } else {
-    s.puck.x = margin; s.puck.y = H*0.75;
-    s.pendingVel = {vx: 3.0, vy: -(1.6+Math.random()*1.0)};
+    s.puck.x = margin; s.puck.y = H/2 + centerOffset;
   }
+  s.pendingVel = {vx: 3.8, vy: 0};
   s.puck.vx = 0; s.puck.vy = 0;
   s.pausedUntil = nowTs() + GOAL_FREEZE_MS;
 }
@@ -661,23 +662,29 @@ function collide(p, paddle){
     p.x = paddle.x + nx*minDist;
     p.y = paddle.y + ny*minDist;
     const speed = Math.max(Math.hypot(p.vx,p.vy), 4);
-    p.vx = nx*speed*1.15;
-    p.vy = ny*speed*1.15;
+    p.vx = nx*speed*1.2;
+    p.vy = ny*speed*1.2;
   }
 }
 
+let broadcastInFlight = false;
 async function broadcastHostState(){
-  if(!hostState) return;
-  await dSet('matches/'+currentMatchId, {
-    status: hostState.phase,
-    scoreHost: hostState.scoreHost, scoreGuest: hostState.scoreGuest,
-    puck: hostState.puck,
-    paddleHost: hostState.paddleHost, paddleGuest: hostState.paddleGuest,
-    winner: hostState.winner || null,
-    countdownEndsAt,
-    updatedAt: nowTs()
-  });
-  updateHud(hostState.scoreHost, hostState.scoreGuest);
+  if(!hostState || broadcastInFlight) return;
+  broadcastInFlight = true;
+  try{
+    await dSet('matches/'+currentMatchId, {
+      status: hostState.phase,
+      scoreHost: hostState.scoreHost, scoreGuest: hostState.scoreGuest,
+      puck: hostState.puck,
+      paddleHost: hostState.paddleHost, paddleGuest: hostState.paddleGuest,
+      winner: hostState.winner || null,
+      countdownEndsAt,
+      updatedAt: nowTs()
+    });
+    updateHud(hostState.scoreHost, hostState.scoreGuest);
+  } finally {
+    broadcastInFlight = false;
+  }
 }
 
 async function finishMatch(s){
@@ -732,18 +739,25 @@ async function onGuestMatchState(m){
     }, 1000);
   }
 }
+let guestSendInFlight = false;
 async function sendGuestPaddle(){
-  await dSet('guestPaddles/'+currentMatchId, {x:myPaddle.x, y:myPaddle.y, ts:nowTs()});
+  if(guestSendInFlight) return;
+  guestSendInFlight = true;
+  try{
+    await dSet('guestPaddles/'+currentMatchId, {x:myPaddle.x, y:myPaddle.y, ts:nowTs()});
+  } finally {
+    guestSendInFlight = false;
+  }
 }
 function runGuestRenderLoop(){
   function tick(){
     if(renderState){
-      dispPuck.x += (renderState.puck.x-dispPuck.x)*0.3;
-      dispPuck.y += (renderState.puck.y-dispPuck.y)*0.3;
-      dispHostPaddle.x += (renderState.paddleHost.x-dispHostPaddle.x)*0.3;
-      dispHostPaddle.y += (renderState.paddleHost.y-dispHostPaddle.y)*0.3;
-      renderFrame(dispPuck, dispHostPaddle, myPaddle, true, renderState.status, renderState.countdownEndsAt);
+      dispPuck.x += (renderState.puck.x-dispPuck.x)*0.35;
+      dispPuck.y += (renderState.puck.y-dispPuck.y)*0.35;
+      dispHostPaddle.x += (renderState.paddleHost.x-dispHostPaddle.x)*0.35;
+      dispHostPaddle.y += (renderState.paddleHost.y-dispHostPaddle.y)*0.35;
     }
+    renderFrame(dispPuck, dispHostPaddle, myPaddle, true, renderState ? renderState.status : 'countdown', renderState ? renderState.countdownEndsAt : null);
     animFrame = requestAnimationFrame(tick);
   }
   animFrame = requestAnimationFrame(tick);
@@ -752,6 +766,14 @@ function runGuestRenderLoop(){
 /* ---- rendering ---- */
 function renderFrame(puckPos, hostPos, guestPos, flip, status, cdEndsAt){
   ctx.clearRect(0,0,W,H);
+  ctx.save();
+  if(celebration){
+    const el = nowTs() - celebration.start;
+    if(el >= 0 && el < 220){
+      const decay = 1-(el/220);
+      ctx.translate((Math.random()-0.5)*10*decay, (Math.random()-0.5)*10*decay);
+    }
+  }
   ctx.fillStyle = iceGradient;
   ctx.fillRect(0,0,W,H);
 
@@ -782,6 +804,7 @@ function renderFrame(puckPos, hostPos, guestPos, flip, status, cdEndsAt){
 
   drawCelebration();
   drawCountdown(status, cdEndsAt);
+  ctx.restore();
 }
 
 function drawPaddle(p, color){
@@ -835,34 +858,66 @@ function drawCelebration(){
   const color = celebration.scorer === 'host' ? '#45f0d1' : '#ff7a59';
   const goalY = celebration.scorer === 'host' ? 8 : H-8;
 
+  if(elapsed < 150){
+    ctx.save();
+    ctx.globalAlpha = (1-elapsed/150)*0.28;
+    ctx.fillStyle = color;
+    ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+
   ctx.save();
-  ctx.globalAlpha = Math.max(0, 1-t*1.2);
-  const grad = ctx.createRadialGradient(W/2, goalY, 0, W/2, goalY, 150);
-  grad.addColorStop(0, color+'99');
+  ctx.globalAlpha = Math.max(0, 1-t*1.1);
+  const grad = ctx.createRadialGradient(W/2, goalY, 0, W/2, goalY, 210);
+  grad.addColorStop(0, color+'bb');
   grad.addColorStop(1, color+'00');
   ctx.fillStyle = grad;
-  ctx.beginPath(); ctx.arc(W/2, goalY, 150, 0, Math.PI*2); ctx.fill();
-  for(let i=0;i<8;i++){
-    const angle = i*(Math.PI*2/8) + t*1.2;
-    const pr = t*75;
+  ctx.beginPath(); ctx.arc(W/2, goalY, 210, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  const ringT = Math.min(1, elapsed/420);
+  ctx.globalAlpha = Math.max(0, 1-ringT)*0.85;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 5*(1-ringT)+1.5;
+  ctx.beginPath();
+  ctx.arc(W/2, goalY, 24+ringT*190, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  for(let i=0;i<16;i++){
+    const seedAngle = (i/16)*Math.PI*2;
+    const angle = seedAngle + Math.sin(i*13.1)*0.25;
+    const speed = 80 + (i%5)*16;
+    const pr = t*speed;
     const px = W/2 + Math.cos(angle)*pr;
-    const py = goalY + Math.sin(angle)*pr*0.7;
-    ctx.globalAlpha = Math.max(0, 1-t);
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(px, py, 4*(1-t*0.4), 0, Math.PI*2); ctx.fill();
+    const py = goalY + Math.sin(angle)*pr*0.6 + t*t*45;
+    ctx.globalAlpha = Math.max(0, 1-t*1.1);
+    ctx.fillStyle = (i%3===0) ? '#ffffff' : color;
+    const size = (i%2===0 ? 5.5 : 3.8) * (1-t*0.5);
+    if(size>0){
+      ctx.beginPath(); ctx.arc(px, py, size, 0, Math.PI*2); ctx.fill();
+    }
   }
   ctx.restore();
 
   ctx.save();
-  const appear = Math.min(1, elapsed/150);
-  const fadeStart = 600;
-  const alpha = elapsed < fadeStart ? 1 : Math.max(0, 1-(elapsed-fadeStart)/300);
+  let scale;
+  if(elapsed < 130){ scale = 0.4 + (elapsed/130)*1.0; }
+  else if(elapsed < 230){ scale = 1.4 - ((elapsed-130)/100)*0.35; }
+  else { scale = 1.05; }
+  const fadeStart = 700;
+  const alpha = elapsed < fadeStart ? 1 : Math.max(0, 1-(elapsed-fadeStart)/(CELEBRATION_MS-fadeStart));
   ctx.globalAlpha = alpha;
   ctx.translate(W/2, H/2 - 30);
-  ctx.scale(0.6+0.4*appear, 0.6+0.4*appear);
-  ctx.font = "bold 48px Oswald, sans-serif";
+  ctx.scale(scale, scale);
+  ctx.font = "bold 60px Oswald, sans-serif";
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.shadowColor = color; ctx.shadowBlur = 22;
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = 'rgba(6,17,31,0.9)';
+  ctx.strokeText('GOAL', 0, 0);
+  ctx.shadowColor = color; ctx.shadowBlur = 30;
   ctx.fillStyle = color;
   ctx.fillText('GOAL', 0, 0);
   ctx.restore();
