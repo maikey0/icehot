@@ -421,7 +421,7 @@ let animFrame = null;
 let countdownEndsAt = null;
 let celebration = null;
 let paddleGuestDisp = {x:W/2, y:70};
-let dispPuck = {x:W/2, y:H/2};
+let predPuck = {x:W/2, y:H/2, vx:0, vy:0};
 let dispHostPaddle = {x:W/2, y:70};
 let lastKnownScoreHost = -1, lastKnownScoreGuest = -1;
 let guestEnding = false;
@@ -435,7 +435,7 @@ async function startMatch(matchId, hostName, guestName){
   myPaddle = isHost ? {x:W/2, y:H-70} : {x:W/2, y:70};
 
   paddleGuestDisp = {x:W/2, y:70};
-  dispPuck = {x:W/2, y:H/2};
+  predPuck = {x:W/2, y:H/2, vx:0, vy:0};
   dispHostPaddle = {x:W/2, y:70};
   celebration = null;
   lastKnownScoreHost = -1; lastKnownScoreGuest = -1;
@@ -634,7 +634,7 @@ function stepPhysics(dt){
   }
 
   collide(p, s.paddleHost);
-  collide(p, s.paddleGuest);
+  collide(p, guestPaddleCache);
 
   const speed = Math.hypot(p.vx,p.vy);
   if(speed > 17){ p.vx *= 17/speed; p.vy *= 17/speed; }
@@ -728,6 +728,14 @@ async function onGuestMatchState(m){
   }
   lastKnownScoreHost = m.scoreHost;
   lastKnownScoreGuest = m.scoreGuest;
+  if(m.puck){
+    const dist = Math.hypot(m.puck.x-predPuck.x, m.puck.y-predPuck.y);
+    const blend = dist > 60 ? 1 : 0.5;
+    predPuck.x += (m.puck.x-predPuck.x)*blend;
+    predPuck.y += (m.puck.y-predPuck.y)*blend;
+    predPuck.vx = m.puck.vx;
+    predPuck.vy = m.puck.vy;
+  }
   renderState = m;
   updateHud(m.scoreHost, m.scoreGuest);
   if(m.status === 'ended' && !guestEnding){
@@ -750,14 +758,19 @@ async function sendGuestPaddle(){
   }
 }
 function runGuestRenderLoop(){
-  function tick(){
+  let lastT = performance.now();
+  function tick(t){
+    const dt = Math.min(32, t-lastT)/16.67;
+    lastT = t;
+    predPuck.x += predPuck.vx*dt;
+    predPuck.y += predPuck.vy*dt;
+    predPuck.x = Math.max(-40, Math.min(W+40, predPuck.x));
+    predPuck.y = Math.max(-40, Math.min(H+40, predPuck.y));
     if(renderState){
-      dispPuck.x += (renderState.puck.x-dispPuck.x)*0.35;
-      dispPuck.y += (renderState.puck.y-dispPuck.y)*0.35;
       dispHostPaddle.x += (renderState.paddleHost.x-dispHostPaddle.x)*0.35;
       dispHostPaddle.y += (renderState.paddleHost.y-dispHostPaddle.y)*0.35;
     }
-    renderFrame(dispPuck, dispHostPaddle, myPaddle, true, renderState ? renderState.status : 'countdown', renderState ? renderState.countdownEndsAt : null);
+    renderFrame(predPuck, dispHostPaddle, myPaddle, true, renderState ? renderState.status : 'countdown', renderState ? renderState.countdownEndsAt : null);
     animFrame = requestAnimationFrame(tick);
   }
   animFrame = requestAnimationFrame(tick);
