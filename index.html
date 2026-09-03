@@ -424,6 +424,7 @@ let paddleGuestDisp = {x:W/2, y:70};
 let predPuck = {x:W/2, y:H/2, vx:0, vy:0};
 let dispHostPaddle = {x:W/2, y:70};
 let lastKnownScoreHost = -1, lastKnownScoreGuest = -1;
+let guestFirstStateSeen = false;
 let guestEnding = false;
 let guestPaddleCache = {x:W/2, y:70};
 
@@ -439,6 +440,7 @@ async function startMatch(matchId, hostName, guestName){
   dispHostPaddle = {x:W/2, y:70};
   celebration = null;
   lastKnownScoreHost = -1; lastKnownScoreGuest = -1;
+  guestFirstStateSeen = false;
   guestEnding = false;
   guestPaddleCache = {x:W/2, y:70};
 
@@ -643,12 +645,13 @@ function stepPhysics(dt){
 function resetPuck(s, concededSide){
   const margin = PUCK_R + 30;
   const centerOffset = 55;
+  const vySign = concededSide === 'guest' ? 1 : -1;
   if(concededSide === 'guest'){
     s.puck.x = margin; s.puck.y = H/2 - centerOffset;
   } else {
     s.puck.x = margin; s.puck.y = H/2 + centerOffset;
   }
-  s.pendingVel = {vx: 3.8, vy: 0};
+  s.pendingVel = {vx: 3.8, vy: vySign*(0.9+Math.random()*0.6)};
   s.puck.vx = 0; s.puck.vy = 0;
   s.pausedUntil = nowTs() + GOAL_FREEZE_MS;
 }
@@ -721,13 +724,19 @@ function eloUpdate(rHost, rGuest, hostWon){
 /* ---- GUEST: receive state, send paddle ---- */
 async function onGuestMatchState(m){
   if(!m) return;
-  if(m.scoreHost > lastKnownScoreHost){
+  if(!guestFirstStateSeen){
+    guestFirstStateSeen = true;
+    lastKnownScoreHost = m.scoreHost;
+    lastKnownScoreGuest = m.scoreGuest;
+  } else if(m.scoreHost > lastKnownScoreHost){
     celebration = {scorer:'host', start: nowTs()};
+    lastKnownScoreHost = m.scoreHost;
+    lastKnownScoreGuest = m.scoreGuest;
   } else if(m.scoreGuest > lastKnownScoreGuest){
     celebration = {scorer:'guest', start: nowTs()};
+    lastKnownScoreHost = m.scoreHost;
+    lastKnownScoreGuest = m.scoreGuest;
   }
-  lastKnownScoreHost = m.scoreHost;
-  lastKnownScoreGuest = m.scoreGuest;
   if(m.puck){
     const dist = Math.hypot(m.puck.x-predPuck.x, m.puck.y-predPuck.y);
     const blend = dist > 60 ? 1 : 0.5;
