@@ -92,7 +92,8 @@
   .modal .row{display:flex; gap:10px;}
   .modal .row button{flex:1;}
 
-  #screen-game{padding:0; position:relative; background:#000;}
+  #screen-game{padding:0; position:relative; background:#000; display:flex; align-items:center; justify-content:center; overflow:hidden;}
+  #rinkWrap{position:relative;}
   #hud{
     position:absolute; top:0; left:0; right:0; z-index:5;
     display:flex; justify-content:space-between; align-items:center;
@@ -172,6 +173,7 @@
 
   <!-- GAME -->
   <div class="screen" id="screen-game">
+    <div id="rinkWrap">
     <div id="hud">
       <div class="side host">
         <span class="tag" id="hostTag">HOST</span>
@@ -184,6 +186,7 @@
     </div>
     <canvas id="rink"></canvas>
     <button id="leaveBtn">試合を放棄</button>
+    </div>
   </div>
 
 </div>
@@ -483,6 +486,9 @@ function setupCanvas(){
   if(!canvasInitialized){
     canvasInitialized = true;
     window.addEventListener('resize', ()=>{ resizeCanvas(); checkOrientation(); });
+    if(window.visualViewport){
+      window.visualViewport.addEventListener('resize', ()=>{ resizeCanvas(); checkOrientation(); });
+    }
     attachPointerHandlers();
     checkOrientation();
   }
@@ -497,11 +503,21 @@ function checkOrientation(){
   }
 }
 
+function getViewportSize(){
+  if(window.visualViewport){
+    return {w: window.visualViewport.width, h: window.visualViewport.height};
+  }
+  return {w: window.innerWidth, h: window.innerHeight};
+}
+
 function resizeCanvas(){
-  const vw = window.innerWidth, vh = window.innerHeight;
-  cssH = vh;
-  cssW = Math.min(vw, vh * (W/H));
+  const vp = getViewportSize();
+  cssW = Math.min(vp.w, vp.h * (W/H));
+  cssH = Math.min(vp.h, cssW * (H/W));
   dpr = window.devicePixelRatio || 1;
+  const wrap = document.getElementById('rinkWrap');
+  wrap.style.width = cssW+'px';
+  wrap.style.height = cssH+'px';
   canvas.style.width = cssW+'px';
   canvas.style.height = cssH+'px';
   canvas.width = Math.round(cssW*dpr);
